@@ -7,7 +7,7 @@
 
 **Nom du projet :** CritiPixel  
 **Objectif :** Plateforme permettant aux utilisateurs de noter et de critiquer des jeux vidéo  
-**Technologies :** Symfony 6.4, PHP 8.2, PostgreSQL 16, GitHub Actions
+**Technologies :** Symfony 6.4, PHP 8.2, MySQL 8.0, GitHub Actions
 
 ### Contexte
 Le projet était fonctionnellement complet mais **dépourvu de contrôle qualité automatisé**. L'objectif de cette session a été d'implémenter une pipeline complète de garantie de qualité du code et de déploiement continu.
@@ -43,25 +43,28 @@ Le projet était fonctionnellement complet mais **dépourvu de contrôle qualit�
 
 ### 2.3 Intégration Continue (GitHub Actions)
 - ✅ Workflow CI complet `.github/workflows/ci.yml`
-- ✅ Pipeline multi-étapes avec isolation PostgreSQL
+- ✅ Pipeline multi-étapes avec isolation MySQL 8.0
 - ✅ Exécution automatique sur PR vers `main`
 - ✅ **Tous les checks passent : 0 erreur** ✅
 
 **Étapes CI implémentées :**
-1. Setup PHP 8.2 + extensions (pgsql, intl, mbstring)
+1. Setup PHP 8.2 + extensions (mysql, intl, mbstring)
 2. Cache Composer
 3. Installation dépendances (`composer install`)
 4. Compilation SASS/assets (`sass:build`)
-5. Préparation BD de test + fixtures
+5. Préparation BD de test MySQL + migrations + fixtures
 6. Exécution PHPUnit (tests fonctionnels + unitaires)
 7. Analyse PHPStan niveau 6
 8. Vérification PHP CS Fixer (dry-run)
 
-### 2.4 Correction BD PostgreSQL
-- ✅ Migration MySQL originale incompatible supprimée
-- ✅ Migration PostgreSQL complète générée (`Version20260429120000.php`)
-- ✅ Syntaxe PostgreSQL correcte : `SERIAL`, `TEXT`, `TIMESTAMP(0) WITHOUT TIME ZONE`
-- ✅ BD de test crée + migre + fixture chargée sans erreur
+### 2.4 Correction et Alignement BD MySQL (Local ↔ CI)
+- ✅ **Problème découvert :** Divergence environnement local (MySQL) vs CI (PostgreSQL)
+- ✅ Migration PostgreSQL-spécifique supprimée
+- ✅ Migration MySQL complète régénérée (`Version20260507090433.php`)
+- ✅ Syntaxe MySQL correcte : `INT AUTO_INCREMENT`, `TEXT`, `DATETIME`
+- ✅ **Workflow CI basculé de PostgreSQL 16 → MySQL 8.0** pour alignement
+- ✅ BD de test crée + migre + fixture chargée sans erreur en local
+- ✅ **Tests passent en local ET en pipeline** ✅
 
 ### 2.5 Rapports de Corrections
 - ✅ `phpstan-rapport-corrections.txt` : détail des 24 erreurs PHPStan (24 catégories d'erreurs)
@@ -172,6 +175,72 @@ Checkout → PHP 8.2 + ext → Composer Cache
 
 ---
 
+### Phase 5 : Découverte et Correction de la Divergence Local ↔ CI
+
+**Problème découvert :**
+- Tests passaient en **GitHub Actions** (PostgreSQL 16) ✅
+- Tests échouaient **en local** (MySQL 8.0) ❌
+- Root cause : Deux plateformes DB différentes = migrations incompatibles
+
+**Diagnostic :**
+```
+CI (.github/workflows/ci.yml)     : postgres:16
+Local (.env.test.local)           : mysql://root:@127.0.0.1:3306
+Migration (Version20260429...)    : PostgreSQL-spécifique (SERIAL, quoted keywords)
+```
+
+**Actions correctives :**
+
+1. **Mettre à jour le workflow CI vers MySQL 8.0**
+```yaml
+# Avant
+services:
+  postgres:
+    image: postgres:16
+
+# Après
+services:
+  mysql:
+    image: mysql:8.0
+    env:
+      MYSQL_ROOT_PASSWORD: root
+      MYSQL_DATABASE: critipixel_test
+```
+
+2. **Régénérer la migration pour MySQL**
+```bash
+# Supprimer la migration PostgreSQL problématique
+rm migrations/Version20260429120000.php
+
+# Régénérer depuis le schéma MySQL
+php bin/console doctrine:database:drop --force --if-exists --env=test
+php bin/console doctrine:database:create --env=test
+php bin/console doctrine:migrations:diff --env=test --from-empty-schema
+```
+
+3. **Résultat :** Migration MySQL `Version20260507090433.php` générée automatiquement ✅
+
+**Vérification finale :**
+```bash
+# Local
+php bin/console doctrine:migrations:migrate --env=test --no-interaction
+php bin/console doctrine:fixtures:load --env=test --no-interaction
+php bin/phpunit
+# Résultat: ✅ 32 tests, 74 assertions - OK
+```
+
+**Commit et Push :**
+```bash
+git add -A
+git commit -m "fix: align CI environment to local MySQL setup + regenerate migrations"
+git push
+```
+
+**Apprentissage clé :** 
+> **Ne pas supposer que les environnements sont identiques.** CI et local doivent utiliser **la même plateforme DB** pour que les tests soient cohérents. Cela évite les surprises du type "ça marche en local mais pas en CI".
+
+---
+
 ## 4. APPRENTISSAGES ACQUIS
 
 ### Concepts Techniques
@@ -192,13 +261,19 @@ Checkout → PHP 8.2 + ext → Composer Cache
 - **Cache :** `.php-cs-fixer.cache` peut masquer les problèmes (à régénérer)
 
 #### 4.3 GitHub Actions et CI/CD
-- **Services Docker :** Conteneur PostgreSQL avec health checks
+- **Services Docker :** Conteneur MySQL 8.0 avec health checks
 - **Cache Composer :** Accélération majeure (30% + rapide si hashFiles() identique)
 - **Env variables :** Surcharger DATABASE_URL pour chaque step (nécessaire)
 - **Asset compilation :** SASS/Dart Sass doit être compilé AVANT tests (prérequisite)
 - **Line endings :** Problème classique Windows (CRLF) vs Linux (LF) en CI
+- **Alignement environnement :** Local et CI doivent utiliser la **même plateforme DB** (MySQL 8.0 ici)
 
-#### 4.4 PostgreSQL vs MySQL
+#### 4.4 Choix de Plateforme DB : MySQL vs PostgreSQL
+
+**Contexte :** Le projet initial utilisait PostgreSQL 16 en CI mais MySQL 8.0 en local, causant une divergence. Cette incompatibilité a été **résolue en alignant tout sur MySQL 8.0**.
+
+**Référence des différences (pour la culture générale) :**
+
 | Aspect | MySQL | PostgreSQL |
 |--------|-------|------------|
 | Auto-increment | `INT AUTO_INCREMENT` | `SERIAL` |
@@ -206,6 +281,8 @@ Checkout → PHP 8.2 + ext → Composer Cache
 | Immutable Date | N/A | `DATE` (with comment) |
 | Reserved keywords | Backticks `` `user` `` | Double quotes `"user"` |
 | Foreign keys | `NOT DEFERRABLE` optionnel | `NOT DEFERRABLE INITIALLY IMMEDIATE` requis |
+
+**Choix effectué :** **MySQL 8.0** partout (local + CI) pour cohérence.
 
 ### Outils et Méthodologies
 
@@ -394,6 +471,38 @@ jobs:
 
 ---
 
+### 6.6 Divergence Environnement : Tests Passent en CI mais Échouent Localement
+
+**Défi :** Tests passaient en GitHub Actions mais échouaient en local
+
+```
+Local  : ❌ SQLSTATE[42000]: Syntax error near '"user"'
+CI     : ✅ Tous les tests passent
+```
+
+**Root cause :** 
+- **CI utilisait PostgreSQL 16** (service Docker `postgres:16`)
+- **Local utilisait MySQL 8.0** (configuration `.env.test.local`)
+- **Migration était PostgreSQL-spécifique** (`CREATE TABLE "user"` avec guillemets, `SERIAL`, etc.)
+- MySQL rejette la syntaxe PostgreSQL → erreur en local
+
+**Symptômes de ce problème :**
+- Test passe en CI, échoue en local = divergence environnement
+- Impossible de déboguer correctement en local si l'env diffère de CI
+- Fausse confiance aux tests (ils passent mais ne représentent pas la réalité locale)
+
+**Solution appliquée :**
+1. Basculer le workflow CI de PostgreSQL → **MySQL 8.0**
+2. Régénérer la migration adaptée à MySQL (suppression de l'ancienne PostgreSQL)
+3. Vérifier que tests passent local ET CI
+
+**Apprentissage clé :** 
+> **Règle d'or : CI et local doivent avoir le même environnement DB.**  
+> Cela évite les surprises et permet un débogage cohérent.  
+> Si vous changez la plateforme DB, changez-la **partout** (local + CI + migrations).
+
+---
+
 ## 7. FICHIERS CLÉ À MONTRER
 
 ### Configuration et Setup
@@ -402,8 +511,8 @@ jobs:
 |---------|------|--------|
 | `phpstan.neon` | Configuration PHPStan | Extensions Symfony/Doctrine, level 6 |
 | `.php-cs-fixer.dist.php` | Configuration PHP CS Fixer | Règles @Symfony, setLineEnding("\n") |
-| `.github/workflows/ci.yml` | Pipeline GitHub Actions | Architecture CI complète |
-| `migrations/Version20260429120000.php` | Migration PostgreSQL | Syntaxe PostgreSQL correcte |
+| `.github/workflows/ci.yml` | Pipeline GitHub Actions | Architecture CI avec MySQL 8.0 |
+| `migrations/Version20260507090433.php` | Migration MySQL | Syntaxe MySQL correcte pour toutes les tables |
 
 ### Rapports
 
@@ -454,7 +563,7 @@ php bin/console doctrine:fixtures:load --env=test --no-interaction
 php bin/phpunit
 
 # Montrer le résultat
-# OK (9 tests, 9 assertions)
+# OK (32 tests, 74 assertions)
 ```
 
 ### 8.3 Montrer la pipeline GitHub Actions
@@ -490,9 +599,11 @@ cat php-cs-fixer-rapport-corrections.txt
 | **Erreurs PHPStan corrigées** | 24 | ✅ 0 restantes |
 | **Fichiers PHP CS Fixer reformatés** | 51 | ✅ 0 restantes |
 | **Fichiers analysés PHPStan** | 42 | ✅ 0 erreur |
+| **Tests PHPUnit** | 32 | ✅ tous passent (74 assertions) |
 | **Steps pipeline CI** | 8 | ✅ tous passent |
 | **Temps pipeline** | ~1m 7s | ✅ acceptable |
 | **Coverage de code** | N/A | (à configurer) |
+| **Migration générée (MySQL)** | 1 | ✅ Version20260507090433.php (compatible local + CI) |
 
 ---
 
